@@ -20,6 +20,8 @@ let selected = new Set();
 let roomCode = null;
 let handRows = [[], [], []]; // up to 3 rows; the player arranges cards freely
 let drag = null; // active drag-and-drop operation
+let dealAnim = false; // one-shot: play the deal-in animation / reset rows on a new deal
+let lastTapCode = null, lastTapTime = 0; // for double-tap-to-play detection
 
 const $ = (id) => document.getElementById(id);
 function showScreen(id) {
@@ -247,6 +249,143 @@ function statCard(num, lbl) {
   return `<div class="stat-card"><div class="num">${num}</div><div class="lbl">${lbl}</div></div>`;
 }
 
+// ============================ VOICE CHAT (WebRTC) ============================
+const ICE = { iceServers: [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:global.stun.twilio.com:3478' },
+] };
+const voice = { joined: false, stream: null, peers: {}, micOn: true, spkOn: true };
+
+async function joinVoice() {
+  if (voice.joined) { leaveVoice(); return; }
+  if (!state) { flashError('Join a game first.'); return; }
+  try {
+    voice.stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+  } catch (e) {
+    flashError('Microphone blocked — allow mic access to use voice.');
+    return;
+  }
+  voice.joined = true; voice.micOn = true; applyMic();
+  socket.emit('voiceJoin');
+  updateVoiceUI();
+}
+function leaveVoice() {
+  socket.emit('voiceLeave');
+  Object.keys(voice.peers).forEach(closePeer);
+  if (voice.stream) { voice.stream.getTracks().forEach((t) => t.stop()); voice.stream = null; }
+  voice.joined = false;
+  updateVoiceUI();
+}
+function applyMic() { if (voice.stream) voice.stream.getAudioTracks().forEach((t) => (t.enabled = voice.micOn)); }
+function vsig(to, data) { socket.emit('voiceSignal', { to, data }); }
+
+function makePeer(peerId, initiator) {
+  if (voice.peers[peerId]) return voice.peers[peerId];
+  const pc = new RTCPeerConnection(ICE);
+  const audio = document.createElement('audio');
+  audio.autoplay = true; audio.playsInline = true; audio.muted = !voice.spkOn;
+  document.body.appendChild(audio);
+  const entry = { pc, audio, pending: [] };
+  voice.peers[peerId] = entry;
+  if (voice.stream) voice.stream.getTracks().forEach((t) => pc.addTrack(t, voice.stream));
+  pc.onicecandidate = (e) => { if (e.candidate) vsig(peerId, { type: 'candidate', candidate: e.candidate }); };
+  pc.ontrack = (e) => { audio.srcObject = e.streams[0]; audio.muted = !voice.spkOn; const p = audio.play(); if (p) p.catch(() => {}); };
+  pc.onconnectionstatechange = () => { if (['failed', 'closed'].includes(pc.connectionState)) closePeer(peerId); };
+  if (initiator) {
+    pc.createOffer()
+      .then((o) => pc.setLocalDescription(o))
+      .then(() => vsig(peerId, { type: 'offer', sdp: pc.localDescription }))
+      .catch(() => {});
+  }
+  return entry;
+}
+function closePeer(id) {
+  const e = voice.peers[id]; if (!e) return;
+  try { e.pc.close(); } catch (_) {}
+  if (e.audio) { e.audio.srcObject = null; e.audio.remove(); }
+  delete voice.peers[id];
+}
+function flushCand(e) { e.pending.forEach((c) => e.pc.addIceCandidate(c).catch(() => {})); e.pending = []; }
+
+socket.on('voicePeers', ({ peers }) => { if (voice.joined) peers.forEach((id) => makePeer(id, socket.id > id)); });
+socket.on('voicePeerJoined', ({ id }) => { if (voice.joined) makePeer(id, socket.id > id); });
+socket.on('voicePeerLeft', ({ id }) => closePeer(id));
+socket.on('voiceSignal', async ({ from, data }) => {
+  if (!voice.joined) return;
+  const e = voice.peers[from] || makePeer(from, false);
+  const pc = e.pc;
+  try {
+    if (data.type === 'offer') {
+      await pc.setRemoteDescription(data.sdp); flushCand(e);
+      const ans = await pc.createAnswer(); await pc.setLocalDescription(ans);
+      vsig(from, { type: 'answer', sdp: pc.localDescription });
+    } else if (data.type === 'answer') {
+      await pc.setRemoteDescription(data.sdp); flushCand(e);
+    } else if (data.type === 'candidate') {
+      if (pc.remoteDescription && pc.remoteDescription.type) await pc.addIceCandidate(data.candidate).catch(() => {});
+      else e.pending.push(data.candidate);
+    }
+  } catch (err) {}
+});
+
+function toggleMic() { if (!voice.joined) return; voice.micOn = !voice.micOn; applyMic(); updateVoiceUI(); }
+function toggleSpk() {
+  if (!voice.joined) return;
+  voice.spkOn = !voice.spkOn;
+  Object.values(voice.peers).forEach((e) => { if (e.audio) e.audio.muted = !voice.spkOn; });
+  updateVoiceUI();
+}
+function updateVoiceUI() {
+  const inRoom = !!state;
+  const jb = $('voiceJoinBtn'), mb = $('voiceMicBtn'), sb = $('voiceSpkBtn');
+  jb.style.display = inRoom ? '' : 'none';
+  jb.textContent = voice.joined ? '📴' : '🎙️';
+  jb.title = voice.joined ? 'Leave voice' : 'Join voice';
+  jb.classList.toggle('on', voice.joined);
+  const show = inRoom && voice.joined;
+  mb.style.display = show ? '' : 'none';
+  sb.style.display = show ? '' : 'none';
+  mb.textContent = voice.micOn ? '🎤' : '🔇';
+  mb.classList.toggle('off', !voice.micOn);
+  mb.title = voice.micOn ? 'Mute my mic' : 'Unmute my mic';
+  sb.textContent = voice.spkOn ? '🎧' : '🔈';
+  sb.classList.toggle('off', !voice.spkOn);
+  sb.title = voice.spkOn ? 'Mute others' : 'Unmute others';
+}
+$('voiceJoinBtn').onclick = joinVoice;
+$('voiceMicBtn').onclick = toggleMic;
+$('voiceSpkBtn').onclick = toggleSpk;
+
+// ============================ EXIT GUARD ============================
+// Prevent accidentally leaving an active game (back button / refresh / close).
+let leavingGame = false;
+let backTrapArmed = false;
+function inActiveGame() {
+  return !!(state && ['playing', 'roundEnd', 'matchEnd'].includes(state.phase));
+}
+function armBackTrap() {
+  if (backTrapArmed) return;
+  backTrapArmed = true;
+  try { history.pushState({ cp: 1 }, ''); } catch (e) {}
+}
+// browser refresh / tab close / navigate away -> native "leave site?" prompt
+window.addEventListener('beforeunload', (e) => {
+  if (inActiveGame() && !leavingGame) { e.preventDefault(); e.returnValue = ''; }
+});
+// back button -> custom confirm popup (re-trap so we don't actually leave yet)
+window.addEventListener('popstate', () => {
+  if (inActiveGame() && !leavingGame) {
+    try { history.pushState({ cp: 1 }, ''); } catch (e) {}
+    $('exitOverlay').classList.remove('hidden');
+  }
+});
+$('exitStayBtn').onclick = () => $('exitOverlay').classList.add('hidden');
+$('exitLeaveBtn').onclick = () => {
+  leavingGame = true;
+  $('exitOverlay').classList.add('hidden');
+  location.href = location.origin + location.pathname; // back to the home screen
+};
+
 // ============================ HOME ============================
 $('createBtn').onclick = () => {
   const name = $('nameInput').value.trim();
@@ -330,13 +469,21 @@ $('logToggle').onclick = () => {
 // ============================ SOCKET ============================
 socket.on('connect', () => {
   if (roomCode) socket.emit('joinRoom', { code: roomCode, name: $('nameInput').value.trim() || 'Player', playerId });
+  // if we were in voice before a reconnect, re-establish it
+  if (voice.joined) {
+    Object.keys(voice.peers).forEach(closePeer);
+    socket.emit('voiceJoin');
+  }
 });
+socket.on('disconnect', () => { Object.keys(voice.peers).forEach(closePeer); });
 socket.on('error', ({ message }) => {
   $('gameError').textContent = message;
   setTimeout(() => { if ($('gameError').textContent === message) $('gameError').textContent = ''; }, 3500);
 });
 socket.on('state', (s) => {
   cueSounds(prev, s);
+  // a brand-new deal just started (only true once per deal, from the server)
+  if (s.phase === 'playing' && (!state || state.phase !== 'playing')) dealAnim = true;
   prev = state;
   state = s;
   roomCode = s.code;
@@ -387,6 +534,8 @@ function render() {
   if (state.phase === 'lobby') { showScreen('lobby'); renderLobby(); }
   else { showScreen('game'); renderGame(); }
   renderOverlay();
+  updateVoiceUI();
+  if (inActiveGame()) armBackTrap();
 }
 
 function renderLobby() {
@@ -519,7 +668,22 @@ function onPointerUp(e) {
   $('hand').classList.remove('dragging');
   clearDropMarkers();
 
-  if (!d.moved) { // a tap -> toggle selection
+  if (!d.moved) { // a tap
+    const now = Date.now();
+    const isDouble = lastTapCode === d.code && now - lastTapTime < 350;
+    lastTapCode = d.code; lastTapTime = now;
+    if (isDouble) { // double-tap a card -> play it (or the whole selection it's part of)
+      lastTapCode = null;
+      const myTurn = state.phase === 'playing' && state.turnSeat === state.yourSeat;
+      if (!myTurn) { flashError("It's not your turn yet."); render(); return; }
+      const codes = (selected.has(d.code) && selected.size > 1)
+        ? flatHand().filter((c) => selected.has(c))
+        : [d.code];
+      socket.emit('play', { cards: codes });
+      selected.clear();
+      return;
+    }
+    // single tap -> toggle selection
     if (selected.has(d.code)) selected.delete(d.code);
     else selected.add(d.code);
     render();
@@ -664,7 +828,8 @@ function renderGame() {
   $('youName').textContent = me.name + ' (you)';
   $('youScore').textContent = `${me.score} pts · ${me.cardCount} cards`;
   for (const code of Array.from(selected)) if (!state.yourHand.includes(code)) selected.delete(code);
-  const freshDeal = prev && prev.phase !== 'playing' && state.phase === 'playing';
+  const freshDeal = dealAnim; // consumed once per new deal (set by the state handler)
+  dealAnim = false;
   reconcileHandRows(freshDeal);
   renderHandRows(freshDeal, yourTurn);
 

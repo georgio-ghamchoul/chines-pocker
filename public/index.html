@@ -9,6 +9,9 @@
 <body>
   <!-- floating controls visible on every screen -->
   <div class="float-controls">
+    <button id="voiceJoinBtn" class="icon-btn hidden" title="Join voice">🎙️</button>
+    <button id="voiceMicBtn" class="icon-btn hidden" title="Mute mic">🎤</button>
+    <button id="voiceSpkBtn" class="icon-btn hidden" title="Mute others">🎧</button>
     <button id="scoreBtn" class="icon-btn" title="Scoreboard">🏆</button>
     <button id="statsBtn" class="icon-btn" title="Your stats">📊</button>
     <button id="themeBtn" class="icon-btn" title="Toggle theme">🌳</button>
@@ -129,6 +132,18 @@
       <h2 id="overlayTitle"></h2>
       <div id="overlayBody"></div>
       <button id="overlayBtn" class="btn primary big"></button>
+    </div>
+  </div>
+
+  <!-- ============ EXIT CONFIRM OVERLAY ============ -->
+  <div id="exitOverlay" class="overlay hidden">
+    <div class="overlay-card">
+      <h2>Leave the game?</h2>
+      <p class="muted">You're in an active game. If you leave, you'll exit the table.</p>
+      <div class="exit-actions">
+        <button id="exitStayBtn" class="btn primary big">Stay</button>
+        <button id="exitLeaveBtn" class="btn big">Exit game</button>
+      </div>
     </div>
   </div>
 

@@ -72,6 +72,8 @@ body {
   display: flex; align-items: center; justify-content: center; box-shadow: 0 3px 8px rgba(0,0,0,.35);
 }
 .icon-btn:active { transform: scale(.94); }
+.icon-btn.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.icon-btn.off { background: var(--danger); color: #fff; border-color: var(--danger); }
 
 /* ---------- screens ---------- */
 .screen { display: none; min-height: 100vh; }
@@ -357,6 +359,9 @@ h2 { margin: 0 0 12px; }
 .stat-card .num { font-size: 1.8rem; font-weight: 800; color: var(--gold); }
 .stat-card .lbl { font-size: .76rem; color: var(--muted); text-transform: uppercase; margin-top: 4px; }
 .stat-empty { color: var(--muted); font-style: italic; margin: 18px 0; }
+
+.exit-actions { display: flex; gap: 10px; margin-top: 14px; }
+.exit-actions .btn { flex: 1; margin-top: 0; }
 
 .hidden { display: none !important; }
 

@@ -32,7 +32,7 @@ function genCode() {
   return code;
 }
 function makeRoom(code, hostId) {
-  return { code, hostId, phase:'lobby', players:[], log:[], game:null, lastRound:null, matchResult:null, lastActive:Date.now(), turnSeconds:0, _botTimer:null, _turnTimer:null };
+  return { code, hostId, phase:'lobby', players:[], log:[], game:null, lastRound:null, matchResult:null, lastActive:Date.now(), turnSeconds:0, _nextStarter:null, _botTimer:null, _turnTimer:null };
 }
 function touch(room){ room.lastActive=Date.now(); }
 function logRoom(room,msg){ room.log.push(msg); if(room.log.length>40) room.log.shift(); }
@@ -42,20 +42,23 @@ function humanCount(room){ return room.players.filter(p=>!p.isBot).length; }
 function startDeal(room){
   const n=room.players.length; const hands=E.deal(n);
   room.players.forEach((p,i)=>{p.hand=hands[i];});
-  let starter=0; room.players.forEach((p,i)=>{ if(p.hand.some(E.isThreeOfDiamonds)) starter=i; });
-  room.game={ turn:starter, currentPlay:null, lastPlayer:null, passes:0, mustIncludeThreeDiamonds:true, oneCardPlayer:null, forcedPlayer:null, forcedHandled:false, freeLeadFor:null };
+  let starter, mustThree;
+  if(room._nextStarter!=null && room._nextStarter>=0 && room._nextStarter<n){ starter=room._nextStarter; mustThree=false; }
+  else { starter=0; room.players.forEach((p,i)=>{ if(p.hand.some(E.isThreeOfDiamonds)) starter=i; }); mustThree=true; }
+  room.game={ turn:starter, currentPlay:null, lastPlayer:null, passes:0, mustIncludeThreeDiamonds:mustThree, oneCardPlayer:null, forcedPlayer:null, forcedHandled:false, freeLeadFor:null };
   room.phase='playing'; room.lastRound=null;
-  logRoom(room, `New deal. ${room.players[starter].name} holds 3D and leads.`);
+  logRoom(room, mustThree ? `New deal. ${room.players[starter].name} holds 3D and leads.` : `New deal. ${room.players[starter].name} won the last round and leads.`);
 }
 function nextSeat(room,seat){ return (seat+1)%room.players.length; }
-function advanceTurn(room){ const g=room.game; let nx=nextSeat(room,g.turn); if(g.freeLeadFor!=null && nx===g.freeLeadFor) nx=nextSeat(room,nx); g.turn=nx; }
-function awardTrick(room){ const g=room.game; const w=g.lastPlayer; logRoom(room,`${room.players[w].name} wins the trick and leads.`); g.currentPlay=null; g.lastPlayer=null; g.passes=0; g.turn=w; g.freeLeadFor=null; }
+function advanceTurn(room){ room.game.turn=nextSeat(room,room.game.turn); }
+function awardTrick(room){ const g=room.game; const w=g.lastPlayer; logRoom(room,`${room.players[w].name} wins the trick and leads.`); g.currentPlay=null; g.lastPlayer=null; g.passes=0; g.turn=w; }
 function handToCodes(hand){ return hand.slice().sort(E.compareCards).map(E.cardCode); }
 function takeCards(hand,codes){ const removed=[]; const working=hand.slice(); for(const code of codes){ const idx=working.findIndex(c=>E.cardCode(c)===code); if(idx===-1) return null; removed.push(working[idx]); working.splice(idx,1);} return {removed,remaining:working}; }
 
 function endRound(room,winnerSeat){
   const results=room.players.map((p,i)=>{ const cardsLeft=i===winnerSeat?0:p.hand.length; const penalty=E.penaltyFor(cardsLeft); p.score+=penalty; return {name:p.name,cardsLeft,penalty,score:p.score,seat:i}; });
   room.lastRound={results,winnerName:room.players[winnerSeat].name};
+  room._nextStarter=winnerSeat;
   logRoom(room,'win');
   const _w=room.players[winnerSeat]; if(!_w.isBot) statFor(_w.id,_w.name).roundsWon+=1;
   results.forEach(r=>{ const p=room.players[r.seat]; if(!p.isBot&&r.penalty>0) statFor(p.id,p.name).points+=r.penalty; });
@@ -67,6 +70,14 @@ function endRound(room,winnerSeat){
   saveStatsSoon();
 }
 
+function forcedCanPlay(room,seat){
+  const g=room.game; const p=room.players[seat];
+  if(!p || !p.hand.length) return false;
+  if(!g.currentPlay) return true;                 // leading: any single is legal
+  if(g.currentPlay.combo.category!==E.CAT.SINGLE) return false; // a single can't beat a combo
+  const highest=p.hand.slice().sort(E.compareCards).pop();
+  return E.beats(E.identifyCombo([highest]), g.currentPlay.combo);
+}
 function doPlay(room,seat,codes){
   const g=room.game;
   if(!g) return 'No game in progress.';
@@ -77,12 +88,12 @@ function doPlay(room,seat,codes){
   if(!taken) return 'You do not hold those cards.';
   const combo=E.identifyCombo(taken.removed);
   if(!combo) return 'That is not a legal combination.';
-  const isForced=g.forcedPlayer===seat && !g.forcedHandled;
+  const isForced=g.forcedPlayer===seat && !g.forcedHandled && forcedCanPlay(room,seat);
   if(isForced){
     if(combo.category!==E.CAT.SINGLE) return 'You must play your highest single card.';
     const highest=player.hand.slice().sort(E.compareCards).pop();
     if(E.cardCode(highest)!==codes[0]) return 'You must play your HIGHEST single card.';
-    player.hand=taken.remaining; g.currentPlay={seat,combo}; g.lastPlayer=seat; g.passes=0; g.forcedHandled=true; g.forcedPlayer=null; g.mustIncludeThreeDiamonds=false; g.freeLeadFor=g.oneCardPlayer;
+    player.hand=taken.remaining; g.currentPlay={seat,combo}; g.lastPlayer=seat; g.passes=0; g.forcedHandled=true; g.forcedPlayer=null; g.mustIncludeThreeDiamonds=false;
     logRoom(room,`${player.name} is forced to play ${combo.cards.map(E.cardLabel).join(' ')} (1-card rule).`);
     afterPlay(room,seat,taken.remaining.length); return null;
   }
@@ -103,9 +114,8 @@ function doPass(room,seat){
   if(!g) return 'No game in progress.';
   if(g.turn!==seat) return 'Not your turn.';
   if(!g.currentPlay) return 'You are leading.';
-  if(g.forcedPlayer===seat && !g.forcedHandled) return 'You must play your highest card (1-card rule).';
+  if(g.forcedPlayer===seat && !g.forcedHandled){ if(forcedCanPlay(room,seat)) return 'You must play your highest card (1-card rule).'; g.forcedHandled=true; g.forcedPlayer=null; }
   g.passes+=1; logRoom(room,`${room.players[seat].name} passed.`);
-  if(g.freeLeadFor!=null){ if(g.passes>=room.players.length-2){ const u=g.freeLeadFor; g.currentPlay=null; g.lastPlayer=null; g.passes=0; g.freeLeadFor=null; g.turn=u; logRoom(room,`${room.players[u].name} takes the lead (1-card rule).`); return null; } advanceTurn(room); return null; }
   if(g.passes>=room.players.length-1){ awardTrick(room); return null; }
   advanceTurn(room); return null;
 }
@@ -133,7 +143,7 @@ function scheduleBot(room){
 function stateFor(room,player){
   const g=room.game; const seat=room.players.indexOf(player);
   return { code:room.code, phase:room.phase, youAreHost:player.id===room.hostId, yourSeat:seat, yourHand:handToCodes(player.hand||[]),
-    turnSeat:g?g.turn:null, turnSeconds:room.turnSeconds||0, turnDeadline:g?(g.turnDeadline||null):null, oneCardPlayer:g?g.oneCardPlayer:null, forcedPlayer:g?(g.forcedHandled?null:g.forcedPlayer):null, mustIncludeThreeDiamonds:g?g.mustIncludeThreeDiamonds:false,
+    turnSeat:g?g.turn:null, turnSeconds:room.turnSeconds||0, turnDeadline:g?(g.turnDeadline||null):null, oneCardPlayer:g?g.oneCardPlayer:null, forcedPlayer:(g&&!g.forcedHandled&&g.forcedPlayer!=null&&forcedCanPlay(room,g.forcedPlayer))?g.forcedPlayer:null, mustIncludeThreeDiamonds:g?g.mustIncludeThreeDiamonds:false,
     currentPlay:g&&g.currentPlay?{seat:g.currentPlay.seat,name:room.players[g.currentPlay.seat].name,cards:g.currentPlay.combo.cards.map(E.cardCode),label:g.currentPlay.combo.label}:null,
     players:room.players.map((p,i)=>({seat:i,name:p.name,score:p.score,cardCount:(p.hand||[]).length,connected:p.connected,isHost:p.id===room.hostId,isBot:!!p.isBot,isYou:i===seat,lifetime:p.isBot?null:(stats[p.id]||null)})),
     log:room.log.slice(-30), lastRound:room.lastRound, matchResult:room.matchResult,
@@ -150,7 +160,7 @@ function broadcast(room){ scheduleBot(room); armTurnTimer(room); broadcastNoBot(
 
 function persist(){
   try{ if(!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR,{recursive:true});
-    const dump=[]; for(const room of rooms.values()){ dump.push({code:room.code,hostId:room.hostId,phase:room.phase,players:room.players.map(p=>({id:p.id,name:p.name,score:p.score,hand:p.hand,isBot:!!p.isBot})),log:room.log,game:room.game,lastRound:room.lastRound,matchResult:room.matchResult,lastActive:room.lastActive}); }
+    const dump=[]; for(const room of rooms.values()){ dump.push({code:room.code,hostId:room.hostId,phase:room.phase,players:room.players.map(p=>({id:p.id,name:p.name,score:p.score,hand:p.hand,isBot:!!p.isBot})),log:room.log,game:room.game,lastRound:room.lastRound,matchResult:room.matchResult,lastActive:room.lastActive,turnSeconds:room.turnSeconds||0,_nextStarter:(room._nextStarter==null?null:room._nextStarter)}); }
     fs.writeFileSync(SAVE_FILE,JSON.stringify(dump));
   }catch(e){ console.error('persist error:',e.message); }
 }
@@ -158,7 +168,7 @@ let _saveTimer=null;
 function saveSoon(){ if(_saveTimer) return; _saveTimer=setTimeout(()=>{_saveTimer=null;persist();},100); }
 function loadRooms(){
   try{ if(!fs.existsSync(SAVE_FILE)) return; const dump=JSON.parse(fs.readFileSync(SAVE_FILE,'utf8')); const cutoff=Date.now()-ROOM_TTL_MS;
-    for(const r of dump){ if((r.lastActive||0)<cutoff) continue; const room=makeRoom(r.code,r.hostId); room.phase=r.phase; room.log=r.log||[]; room.game=r.game||null; room.lastRound=r.lastRound||null; room.matchResult=r.matchResult||null; room.lastActive=r.lastActive||Date.now();
+    for(const r of dump){ if((r.lastActive||0)<cutoff) continue; const room=makeRoom(r.code,r.hostId); room.phase=r.phase; room.log=r.log||[]; room.game=r.game||null; room.lastRound=r.lastRound||null; room.matchResult=r.matchResult||null; room.lastActive=r.lastActive||Date.now(); room.turnSeconds=r.turnSeconds||0; room._nextStarter=(r._nextStarter==null?null:r._nextStarter);
       room.players=(r.players||[]).map(p=>({id:p.id,name:p.name,score:p.score||0,hand:p.hand||[],isBot:!!p.isBot,socketId:null,connected:!!p.isBot})); rooms.set(room.code,room); }
     if(rooms.size) console.log(`Restored ${rooms.size} room(s) from disk.`);
     for(const room of rooms.values()) scheduleBot(room);
@@ -173,16 +183,19 @@ io.on('connection',(socket)=>{
   socket.on('startGame',()=>{ const f=playerBySocket(socket.id); if(!f) return; const {room,player}=f; if(player.id!==room.hostId) return socket.emit('error',{message:'Only the host can start.'}); if(room.players.length!==MAX_PLAYERS) return socket.emit('error',{message:'Need 4 seats filled.'}); if(humanCount(room)<1) return; if(room.phase==='playing') return; startDeal(room); broadcast(room); });
   socket.on('setTurnTime',({seconds}={})=>{ const f=playerBySocket(socket.id); if(!f)return; const {room,player}=f; if(player.id!==room.hostId)return; const s2=Number(seconds); room.turnSeconds=[0,10,20,30].includes(s2)?s2:0; clearTurnTimer(room); broadcast(room); });
   socket.on('nextRound',()=>{ const f=playerBySocket(socket.id); if(!f) return; const {room,player}=f; if(player.id!==room.hostId||room.phase!=='roundEnd') return; startDeal(room); broadcast(room); });
-  socket.on('playAgain',()=>{ const f=playerBySocket(socket.id); if(!f) return; const {room,player}=f; if(player.id!==room.hostId||room.phase!=='matchEnd') return; room.players.forEach(p=>p.score=0); room.matchResult=null; room.lastRound=null; startDeal(room); broadcast(room); });
+  socket.on('playAgain',()=>{ const f=playerBySocket(socket.id); if(!f) return; const {room,player}=f; if(player.id!==room.hostId||room.phase!=='matchEnd') return; room.players.forEach(p=>p.score=0); room.matchResult=null; room.lastRound=null; room._nextStarter=null; startDeal(room); broadcast(room); });
   socket.on('play',({cards})=>{ const f=playerBySocket(socket.id); if(!f) return; const {room,player}=f; const seat=room.players.indexOf(player); const err=doPlay(room,seat,cards); if(err) socket.emit('error',{message:err}); touch(room); broadcast(room); });
   socket.on('pass',()=>{ const f=playerBySocket(socket.id); if(!f) return; const {room,player}=f; const seat=room.players.indexOf(player); const err=doPass(room,seat); if(err) socket.emit('error',{message:err}); touch(room); broadcast(room); });
   socket.on('reaction',({emoji}={})=>{ const f=playerBySocket(socket.id); if(!f) return; const {room,player}=f; const t=String(emoji||'').slice(0,12); if(!ALLOWED_REACTIONS.has(t)) return; const now=Date.now(); if(player._lastReact&&now-player._lastReact<400) return; player._lastReact=now; const seat=room.players.indexOf(player); io.to(room.code).emit('reaction',{seat,name:player.name,emoji:t}); });
   socket.on('chat',({text}={})=>{ const f=playerBySocket(socket.id); if(!f) return; const {room,player}=f; const msg=String(text||'').replace(/[\x00-\x1F\x7F]/g,' ').trim().slice(0,140); if(!msg) return; const now=Date.now(); if(player._lastChat&&now-player._lastChat<300) return; player._lastChat=now; const seat=room.players.indexOf(player); socket.to(room.code).emit('chat',{seat,name:player.name,text:msg}); });
   socket.on('getStats',({playerId}={},cb)=>{ cb&&cb({ok:true,stats:stats[playerId]||null}); });
-  socket.on('disconnect',()=>{ const f=playerBySocket(socket.id); if(!f) return; const {room,player}=f; player.connected=false; player.socketId=null; if(room.phase==='lobby'){ room.players=room.players.filter(p=>p.id!==player.id); if(humanCount(room)===0){ rooms.delete(room.code); saveSoon(); return; } if(!room.players.some(p=>p.id===room.hostId&&!p.isBot)){ const fh=room.players.find(p=>!p.isBot); if(fh) room.hostId=fh.id; } } broadcast(room); });
+  socket.on('voiceJoin',()=>{ const f=playerBySocket(socket.id); if(!f) return; const {room,player}=f; player._voice=true; const peers=room.players.filter(p=>p._voice&&p.socketId&&p.socketId!==socket.id).map(p=>p.socketId); socket.emit('voicePeers',{peers}); socket.to(room.code).emit('voicePeerJoined',{id:socket.id}); });
+  socket.on('voiceLeave',()=>{ const f=playerBySocket(socket.id); if(!f) return; const {room,player}=f; player._voice=false; socket.to(room.code).emit('voicePeerLeft',{id:socket.id}); });
+  socket.on('voiceSignal',({to,data}={})=>{ if(!to) return; io.to(to).emit('voiceSignal',{from:socket.id,data}); });
+  socket.on('disconnect',()=>{ const f=playerBySocket(socket.id); if(!f) return; const {room,player}=f; if(player._voice){ player._voice=false; socket.to(room.code).emit('voicePeerLeft',{id:socket.id}); } player.connected=false; player.socketId=null; if(room.phase==='lobby'){ room.players=room.players.filter(p=>p.id!==player.id); if(humanCount(room)===0){ rooms.delete(room.code); saveSoon(); return; } if(!room.players.some(p=>p.id===room.hostId&&!p.isBot)){ const fh=room.players.find(p=>!p.isBot); if(fh) room.hostId=fh.id; } } broadcast(room); });
 });
 loadStats();
 loadRooms();
 server.listen(PORT,()=>{ console.log(`Chinese Poker server running on http://localhost:${PORT}`); });
 
-if(process.env.CP_TEST) module.exports={makeRoom,doPlay,doPass};
+if(process.env.CP_TEST) module.exports={makeRoom,doPlay,doPass,startDeal,endRound};
