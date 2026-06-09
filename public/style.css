@@ -386,7 +386,13 @@ h2 { margin: 0 0 12px; }
   .actions .btn { padding: 14px 10px; font-size: .95rem; } /* bigger tap targets */
   .turn-banner { font-size: .8rem; }
   .turn-timer { font-size: .82rem; padding: 2px 8px; min-width: 40px; }
-  .icon-btn { width: 36px; height: 36px; font-size: 1rem; }
+  /* keep the top controls compact and on one row so they don't cover the timer */
+  .float-controls { top: 6px; right: 6px; gap: 4px; flex-wrap: nowrap; }
+  .icon-btn { width: 30px; height: 30px; font-size: .9rem; }
+  /* stack the top bar on its own lines, pushed clear below the floating icons */
+  .topbar { flex-direction: column; align-items: flex-start; gap: 4px; margin-top: 48px; }
+  .topbar-right { width: 100%; justify-content: flex-start; }
+  .turn-banner { text-align: left; }
   .chat-panel { width: calc(100vw - 20px); left: 10px; }
   h1 { font-size: 1.6rem; }
 }
