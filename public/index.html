@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="wood">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Chinese Poker</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- floating controls visible on every screen -->
+  <div class="float-controls">
+    <button id="scoreBtn" class="icon-btn" title="Scoreboard">🏆</button>
+    <button id="statsBtn" class="icon-btn" title="Your stats">📊</button>
+    <button id="themeBtn" class="icon-btn" title="Toggle theme">🌳</button>
+    <button id="muteBtn" class="icon-btn" title="Toggle sound">🔊</button>
+  </div>
+
+  <!-- ============ HOME / LOBBY ENTRY ============ -->
+  <section id="home" class="screen active">
+    <div class="card-panel">
+      <h1>♠ Chinese Poker ♥</h1>
+      <p class="tagline">4 players · play your cards, empty your hand, dodge 101.</p>
+
+      <label class="field">
+        <span>Your name</span>
+        <input id="nameInput" maxlength="16" placeholder="e.g. Georgio" autocomplete="off" />
+      </label>
+
+      <button id="createBtn" class="btn primary big">Create a room</button>
+
+      <div class="divider"><span>or join one</span></div>
+
+      <label class="field">
+        <span>Room code</span>
+        <input id="codeInput" maxlength="4" placeholder="ABCD" autocomplete="off" style="text-transform:uppercase" />
+      </label>
+      <button id="joinBtn" class="btn big">Join room</button>
+
+      <p id="homeError" class="error"></p>
+    </div>
+  </section>
+
+  <!-- ============ WAITING LOBBY ============ -->
+  <section id="lobby" class="screen">
+    <div class="card-panel">
+      <h2>Room <span id="lobbyCode" class="code-chip"></span></h2>
+      <p class="muted">Share this code with friends, or add bots to fill empty seats.</p>
+      <button id="shareBtn" class="btn">Copy invite link</button>
+      <ul id="lobbyPlayers" class="player-list"></ul>
+      <div class="bot-controls">
+        <button id="addBotBtn" class="btn ghost small">+ Add bot</button>
+        <button id="removeBotBtn" class="btn ghost small">– Remove bot</button>
+      </div>
+      <div class="timer-pick">
+        <span class="muted">Turn timer</span>
+        <div id="timerBtns" class="timer-btns">
+          <button class="tbtn" data-s="0">Off</button>
+          <button class="tbtn" data-s="10">10s</button>
+          <button class="tbtn" data-s="20">20s</button>
+          <button class="tbtn" data-s="30">30s</button>
+        </div>
+      </div>
+      <p id="lobbyStatus" class="muted"></p>
+      <button id="startBtn" class="btn primary big" disabled>Start game</button>
+    </div>
+  </section>
+
+  <!-- ============ GAME TABLE ============ -->
+  <section id="game" class="screen">
+    <div class="table-wrap">
+      <header class="topbar">
+        <span class="code-chip" id="gameCode"></span>
+        <div class="topbar-right">
+          <span id="turnTimer" class="turn-timer hidden"></span>
+          <span id="turnBanner" class="turn-banner"></span>
+        </div>
+      </header>
+
+      <div id="oneCardAlert" class="alert hidden"></div>
+
+      <div class="table-grid">
+        <div class="seat-slot top" id="seatTop"></div>
+        <div class="seat-slot left" id="seatLeft"></div>
+        <div class="center-table" id="centerTable">
+          <div id="currentPlayLabel" class="play-label"></div>
+          <div id="currentPlay" class="played-cards"></div>
+          <div class="drop-hint">drag cards here to play</div>
+        </div>
+        <div class="seat-slot right" id="seatRight"></div>
+      </div>
+
+      <div class="your-area">
+        <div class="you-meta">
+          <span id="youName" class="you-name"></span>
+          <span id="youScore" class="badge"></span>
+        </div>
+        <div id="hand" class="hand">
+          <div class="hand-row" data-row="0"></div>
+          <div class="hand-row" data-row="1"></div>
+          <div class="hand-row" data-row="2"></div>
+        </div>
+        <div class="actions">
+          <button id="passBtn" class="btn">Pass</button>
+          <button id="playBtn" class="btn primary">Play selected</button>
+          <button id="clearSelBtn" class="btn ghost">Clear</button>
+        </div>
+        <p id="gameError" class="error"></p>
+      </div>
+
+      <button id="logToggle" class="btn ghost small">Show log</button>
+      <div id="log" class="log hidden"></div>
+    </div>
+
+    <!-- chat: typing bar + emoji quick-chat -->
+    <button id="reactBtn" class="react-fab" title="Chat">💬<span id="chatUnread" class="chat-unread hidden"></span></button>
+    <div id="chatPanel" class="chat-panel hidden">
+      <div id="chatLog" class="chat-log"></div>
+      <div id="reactTray" class="react-tray"></div>
+      <form id="chatForm" class="chat-form" autocomplete="off">
+        <input id="chatInput" class="chat-input" maxlength="140" placeholder="Type a message…" />
+        <button type="submit" class="btn primary chat-send">Send</button>
+      </form>
+    </div>
+  </section>
+
+  <!-- ============ ROUND / MATCH OVERLAY ============ -->
+  <div id="overlay" class="overlay hidden">
+    <div class="overlay-card">
+      <h2 id="overlayTitle"></h2>
+      <div id="overlayBody"></div>
+      <button id="overlayBtn" class="btn primary big"></button>
+    </div>
+  </div>
+
+  <!-- ============ SCOREBOARD OVERLAY ============ -->
+  <div id="scoresOverlay" class="overlay hidden">
+    <div class="overlay-card">
+      <h2>🏆 Scoreboard</h2>
+      <div id="scoresBody"></div>
+      <button id="scoresClose" class="btn primary big">Close</button>
+    </div>
+  </div>
+
+  <!-- ============ STATS OVERLAY ============ -->
+  <div id="statsOverlay" class="overlay hidden">
+    <div class="overlay-card">
+      <h2>📊 Your Stats</h2>
+      <div id="statsBody"></div>
+      <button id="statsClose" class="btn primary big">Close</button>
+    </div>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="client.js"></script>
+</body>
+</html>
