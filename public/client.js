@@ -107,7 +107,7 @@ const SFX = {
 
 // ============================ EMOJI QUICK-CHAT ============================
 const REACT_EMOJIS = ['👍', '😂', '😮', '😎', '🔥', '😭', '🎉', '🤔', '👏', '🫡'];
-const REACT_PHRASES = ['ayree', 'GG', 'blghalay', 'maberba7', 'werrr', 'laa wloo', 'asra33'];
+const REACT_PHRASES = ['ayree', 'GG', 'blghalatt', 'maberba7', 'werrr', 'laa wloo', 'asra33'];
 
 (function buildTray() {
   const tray = $('reactTray');
