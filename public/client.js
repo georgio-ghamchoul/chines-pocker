@@ -706,9 +706,13 @@ function onPointerUp(e) {
     return; // next state update re-renders
   }
 
-  // dropped into a row -> move ONLY the card you grabbed to that row/position
+  // dropped into a row -> move the whole selection if this card is part of a
+  // multi-select, otherwise just the card you grabbed
   const t = computeRowDrop(e);
-  moveCards([d.code], t.row, t.idx);
+  const codes = (selected.has(d.code) && selected.size > 1)
+    ? flatHand().filter((c) => selected.has(c))
+    : [d.code];
+  moveCards(codes, t.row, t.idx);
   render();
 }
 
@@ -811,11 +815,12 @@ function renderGame() {
     alert.classList.add('hidden');
   }
 
-  // opponents seated around the table: next player on the left, then top, then right
+  // opponents seated around the table: next player on the right, then top, then left
+  // (play flows to the right: you -> right -> top -> left -> you)
   const n = state.players.length;
-  renderSeat('seatLeft', (state.yourSeat + 1) % n, false);
+  renderSeat('seatRight', (state.yourSeat + 1) % n, false);
   renderSeat('seatTop', (state.yourSeat + 2) % n, true);
-  renderSeat('seatRight', (state.yourSeat + 3) % n, false);
+  renderSeat('seatLeft', (state.yourSeat + 3) % n, false);
 
   // current play
   const cp = $('currentPlay');
