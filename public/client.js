@@ -339,7 +339,7 @@ function toggleSpk() {
 function updateVoiceUI() {
   const inRoom = !!state;
   const jb = $('voiceJoinBtn'), mb = $('voiceMicBtn'), sb = $('voiceSpkBtn');
-  jb.style.display = inRoom ? '' : 'none';
+  jb.classList.toggle('hidden', !inRoom);
   jb.innerHTML = voice.joined ? '📴<span class="vlabel">Leave</span>' : '🎙️<span class="vlabel">Voice</span>';
   jb.title = voice.joined ? 'Leave voice chat' : 'Talk with the table — join voice chat';
   jb.classList.toggle('on', voice.joined);
@@ -347,8 +347,8 @@ function updateVoiceUI() {
   try { seenVoice = !!localStorage.getItem('cp_voiceSeen'); } catch (e) {}
   jb.classList.toggle('pulse', inRoom && !voice.joined && !seenVoice);
   const show = inRoom && voice.joined;
-  mb.style.display = show ? '' : 'none';
-  sb.style.display = show ? '' : 'none';
+  mb.classList.toggle('hidden', !show);
+  sb.classList.toggle('hidden', !show);
   mb.textContent = voice.micOn ? '🎤' : '🔇';
   mb.classList.toggle('off', !voice.micOn);
   mb.title = voice.micOn ? 'Mute my mic' : 'Unmute my mic';
