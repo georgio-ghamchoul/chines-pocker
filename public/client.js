@@ -266,6 +266,7 @@ async function joinVoice() {
     return;
   }
   voice.joined = true; voice.micOn = true; applyMic();
+  try { localStorage.setItem('cp_voiceSeen', '1'); } catch (e) {}
   socket.emit('voiceJoin');
   updateVoiceUI();
 }
@@ -339,9 +340,12 @@ function updateVoiceUI() {
   const inRoom = !!state;
   const jb = $('voiceJoinBtn'), mb = $('voiceMicBtn'), sb = $('voiceSpkBtn');
   jb.style.display = inRoom ? '' : 'none';
-  jb.textContent = voice.joined ? '📴' : '🎙️';
-  jb.title = voice.joined ? 'Leave voice' : 'Join voice';
+  jb.innerHTML = voice.joined ? '📴<span class="vlabel">Leave</span>' : '🎙️<span class="vlabel">Voice</span>';
+  jb.title = voice.joined ? 'Leave voice chat' : 'Talk with the table — join voice chat';
   jb.classList.toggle('on', voice.joined);
+  let seenVoice = false;
+  try { seenVoice = !!localStorage.getItem('cp_voiceSeen'); } catch (e) {}
+  jb.classList.toggle('pulse', inRoom && !voice.joined && !seenVoice);
   const show = inRoom && voice.joined;
   mb.style.display = show ? '' : 'none';
   sb.style.display = show ? '' : 'none';
@@ -547,7 +551,7 @@ function renderLobby() {
     const li = document.createElement('li');
     if (p) {
       li.innerHTML =
-        `<span>${escapeHtml(p.name)}${p.isYou ? ' (you)' : ''}</span>` +
+        `<span>${escapeHtml(p.name)}${p.isYou ? ' (you)' : ''}${p.inVoice ? ' <span class="voice-badge" title="In voice chat">🎙️</span>' : ''}</span>` +
         `<span>${p.isHost ? '<span class="tag host-tag">HOST</span> ' : ''}${p.isBot ? '<span class="tag bot-tag">BOT</span>' : ''}</span>`;
     } else {
       li.innerHTML = '<span class="empty">empty seat…</span>';
@@ -582,7 +586,7 @@ function renderSeat(elId, seat, wide) {
     `<div class="opp${active ? ' active-turn' : ''}${p.connected ? '' : ' disconnected'}" data-seat="${seat}">` +
     (p.isBot ? '<span class="bot-badge">BOT</span>' : '') +
     (state.oneCardPlayer === seat ? '<span class="one-card-flag">1 CARD</span>' : '') +
-    `<div class="opp-name">${escapeHtml(p.name)}${!p.isBot && !p.connected ? ' (off)' : ''}</div>` +
+    `<div class="opp-name">${p.inVoice ? '<span class="voice-badge" title="In voice chat">🎙️</span> ' : ''}${escapeHtml(p.name)}${!p.isBot && !p.connected ? ' (off)' : ''}</div>` +
     `<div class="mini-cards">${mini}</div>` +
     `<div class="opp-cards">${p.cardCount} cards</div>` +
     `<div class="opp-score">${p.score} pts</div>` +

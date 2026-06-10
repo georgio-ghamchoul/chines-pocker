@@ -402,3 +402,17 @@ h2 { margin: 0 0 12px; }
   .card { width: 40px; height: 57px; }
   .card .pip { font-size: 1rem; }
 }
+
+/* ---------- voice chat ---------- */
+.icon-btn.voice-btn { width: auto; min-width: 40px; border-radius: 20px; padding: 0 12px; gap: 5px; }
+.voice-btn .vlabel { font-size: .8rem; font-weight: 700; letter-spacing: .02em; }
+.icon-btn.pulse { animation: voicePulse 1.6s ease-in-out infinite; }
+@keyframes voicePulse {
+  0%, 100% { box-shadow: 0 3px 8px rgba(0,0,0,.35); }
+  50% { box-shadow: 0 0 0 7px rgba(80, 200, 120, .45), 0 3px 8px rgba(0,0,0,.35); }
+}
+.voice-badge { font-size: .8em; }
+@media (max-width: 700px) {
+  .icon-btn.voice-btn { padding: 0 8px; }
+  .voice-btn .vlabel { font-size: .7rem; }
+}

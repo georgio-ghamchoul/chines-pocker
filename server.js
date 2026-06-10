@@ -45,7 +45,7 @@ function startDeal(room){
   let starter, mustThree;
   if(room._nextStarter!=null && room._nextStarter>=0 && room._nextStarter<n){ starter=room._nextStarter; mustThree=false; }
   else { starter=0; room.players.forEach((p,i)=>{ if(p.hand.some(E.isThreeOfDiamonds)) starter=i; }); mustThree=true; }
-  room.game={ turn:starter, currentPlay:null, lastPlayer:null, passes:0, mustIncludeThreeDiamonds:mustThree, oneCardPlayer:null, forcedPlayer:null, forcedHandled:false, freeLeadFor:null };
+  room.game={ turn:starter, currentPlay:null, lastPlayer:null, passes:0, mustIncludeThreeDiamonds:mustThree, oneCardPlayer:null, forcedPlayer:null, forcedHandled:false, freeLeadFor:null, played:[] };
   room.phase='playing'; room.lastRound=null;
   logRoom(room, mustThree ? `New deal. ${room.players[starter].name} holds 3D and leads.` : `New deal. ${room.players[starter].name} won the last round and leads.`);
 }
@@ -93,13 +93,13 @@ function doPlay(room,seat,codes){
     if(combo.category!==E.CAT.SINGLE) return 'You must play your highest single card.';
     const highest=player.hand.slice().sort(E.compareCards).pop();
     if(E.cardCode(highest)!==codes[0]) return 'You must play your HIGHEST single card.';
-    player.hand=taken.remaining; g.currentPlay={seat,combo}; g.lastPlayer=seat; g.passes=0; g.forcedHandled=true; g.forcedPlayer=null; g.mustIncludeThreeDiamonds=false;
+    player.hand=taken.remaining; g.currentPlay={seat,combo}; g.lastPlayer=seat; g.passes=0; g.forcedHandled=true; g.forcedPlayer=null; g.mustIncludeThreeDiamonds=false; (g.played=g.played||[]).push(...combo.cards);
     logRoom(room,`${player.name} is forced to play ${combo.cards.map(E.cardLabel).join(' ')} (1-card rule).`);
     afterPlay(room,seat,taken.remaining.length); return null;
   }
   if(g.mustIncludeThreeDiamonds){ if(!combo.cards.some(E.isThreeOfDiamonds)) return 'Your first play must include 3D.'; }
   if(g.currentPlay){ if(combo.category!==g.currentPlay.combo.category) return `You must play a ${g.currentPlay.combo.category} (or pass).`; if(!E.beats(combo,g.currentPlay.combo)) return 'That does not beat the current play.'; }
-  player.hand=taken.remaining; g.currentPlay={seat,combo}; g.lastPlayer=seat; g.passes=0; g.mustIncludeThreeDiamonds=false; g.freeLeadFor=null;
+  player.hand=taken.remaining; g.currentPlay={seat,combo}; g.lastPlayer=seat; g.passes=0; g.mustIncludeThreeDiamonds=false; g.freeLeadFor=null; (g.played=g.played||[]).push(...combo.cards);
   logRoom(room,`${player.name} played ${combo.label}.`);
   afterPlay(room,seat,taken.remaining.length); return null;
 }
@@ -121,9 +121,10 @@ function doPass(room,seat){
 }
 
 function botMove(room,seat){
-  const g=room.game; const me=room.players[seat];
-  const opponents=room.players.filter((_,i)=>i!==seat).map(p=>({cardCount:p.hand.length}));
-  const decision=BOT.decide({hand:me.hand,current:g.currentPlay?g.currentPlay.combo:null,forced:g.forcedPlayer===seat&&!g.forcedHandled,mustThreeD:g.mustIncludeThreeDiamonds,opponents});
+  const g=room.game; const me=room.players[seat]; const n=room.players.length;
+  // opponents in turn order: opponents[0] is the next player to act after this bot
+  const opponents=[]; for(let i=1;i<n;i++){ const p=room.players[(seat+i)%n]; opponents.push({cardCount:p.hand.length}); }
+  const decision=BOT.decide({hand:me.hand,current:g.currentPlay?g.currentPlay.combo:null,forced:g.forcedPlayer===seat&&!g.forcedHandled,mustThreeD:g.mustIncludeThreeDiamonds,opponents,played:g.played||[]});
   return decision?decision.map(E.cardCode):null;
 }
 function scheduleBot(room){
@@ -145,7 +146,7 @@ function stateFor(room,player){
   return { code:room.code, phase:room.phase, youAreHost:player.id===room.hostId, yourSeat:seat, yourHand:handToCodes(player.hand||[]),
     turnSeat:g?g.turn:null, turnSeconds:room.turnSeconds||0, turnDeadline:g?(g.turnDeadline||null):null, oneCardPlayer:g?g.oneCardPlayer:null, forcedPlayer:(g&&!g.forcedHandled&&g.forcedPlayer!=null&&forcedCanPlay(room,g.forcedPlayer))?g.forcedPlayer:null, mustIncludeThreeDiamonds:g?g.mustIncludeThreeDiamonds:false,
     currentPlay:g&&g.currentPlay?{seat:g.currentPlay.seat,name:room.players[g.currentPlay.seat].name,cards:g.currentPlay.combo.cards.map(E.cardCode),label:g.currentPlay.combo.label}:null,
-    players:room.players.map((p,i)=>({seat:i,name:p.name,score:p.score,cardCount:(p.hand||[]).length,connected:p.connected,isHost:p.id===room.hostId,isBot:!!p.isBot,isYou:i===seat,lifetime:p.isBot?null:(stats[p.id]||null)})),
+    players:room.players.map((p,i)=>({seat:i,name:p.name,score:p.score,cardCount:(p.hand||[]).length,connected:p.connected,isHost:p.id===room.hostId,isBot:!!p.isBot,isYou:i===seat,inVoice:!!p._voice,lifetime:p.isBot?null:(stats[p.id]||null)})),
     log:room.log.slice(-30), lastRound:room.lastRound, matchResult:room.matchResult,
     canStart:room.phase==='lobby'&&room.players.length===MAX_PLAYERS&&humanCount(room)>=1&&player.id===room.hostId,
     canAddBot:room.phase==='lobby'&&room.players.length<MAX_PLAYERS&&player.id===room.hostId,
@@ -189,8 +190,8 @@ io.on('connection',(socket)=>{
   socket.on('reaction',({emoji}={})=>{ const f=playerBySocket(socket.id); if(!f) return; const {room,player}=f; const t=String(emoji||'').slice(0,12); if(!ALLOWED_REACTIONS.has(t)) return; const now=Date.now(); if(player._lastReact&&now-player._lastReact<400) return; player._lastReact=now; const seat=room.players.indexOf(player); io.to(room.code).emit('reaction',{seat,name:player.name,emoji:t}); });
   socket.on('chat',({text}={})=>{ const f=playerBySocket(socket.id); if(!f) return; const {room,player}=f; const msg=String(text||'').replace(/[\x00-\x1F\x7F]/g,' ').trim().slice(0,140); if(!msg) return; const now=Date.now(); if(player._lastChat&&now-player._lastChat<300) return; player._lastChat=now; const seat=room.players.indexOf(player); socket.to(room.code).emit('chat',{seat,name:player.name,text:msg}); });
   socket.on('getStats',({playerId}={},cb)=>{ cb&&cb({ok:true,stats:stats[playerId]||null}); });
-  socket.on('voiceJoin',()=>{ const f=playerBySocket(socket.id); if(!f) return; const {room,player}=f; player._voice=true; const peers=room.players.filter(p=>p._voice&&p.socketId&&p.socketId!==socket.id).map(p=>p.socketId); socket.emit('voicePeers',{peers}); socket.to(room.code).emit('voicePeerJoined',{id:socket.id}); });
-  socket.on('voiceLeave',()=>{ const f=playerBySocket(socket.id); if(!f) return; const {room,player}=f; player._voice=false; socket.to(room.code).emit('voicePeerLeft',{id:socket.id}); });
+  socket.on('voiceJoin',()=>{ const f=playerBySocket(socket.id); if(!f) return; const {room,player}=f; player._voice=true; const peers=room.players.filter(p=>p._voice&&p.socketId&&p.socketId!==socket.id).map(p=>p.socketId); socket.emit('voicePeers',{peers}); socket.to(room.code).emit('voicePeerJoined',{id:socket.id}); broadcastNoBot(room); });
+  socket.on('voiceLeave',()=>{ const f=playerBySocket(socket.id); if(!f) return; const {room,player}=f; player._voice=false; socket.to(room.code).emit('voicePeerLeft',{id:socket.id}); broadcastNoBot(room); });
   socket.on('voiceSignal',({to,data}={})=>{ if(!to) return; io.to(to).emit('voiceSignal',{from:socket.id,data}); });
   socket.on('disconnect',()=>{ const f=playerBySocket(socket.id); if(!f) return; const {room,player}=f; if(player._voice){ player._voice=false; socket.to(room.code).emit('voicePeerLeft',{id:socket.id}); } player.connected=false; player.socketId=null; if(room.phase==='lobby'){ room.players=room.players.filter(p=>p.id!==player.id); if(humanCount(room)===0){ rooms.delete(room.code); saveSoon(); return; } if(!room.players.some(p=>p.id===room.hostId&&!p.isBot)){ const fh=room.players.find(p=>!p.isBot); if(fh) room.hostId=fh.id; } } broadcast(room); });
 });
