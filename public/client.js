@@ -22,6 +22,7 @@ let handRows = [[], [], []]; // up to 3 rows; the player arranges cards freely
 let drag = null; // active drag-and-drop operation
 let dealAnim = false; // one-shot: play the deal-in animation / reset rows on a new deal
 let lastTapCode = null, lastTapTime = 0; // for double-tap-to-play detection
+let overlayHoldUntil = 0; // hold the round/match score popup until this time (show final play first)
 
 const $ = (id) => document.getElementById(id);
 function showScreen(id) {
@@ -488,6 +489,12 @@ socket.on('state', (s) => {
   cueSounds(prev, s);
   // a brand-new deal just started (only true once per deal, from the server)
   if (s.phase === 'playing' && (!state || state.phase !== 'playing')) dealAnim = true;
+  // round/match just ended: hold the score popup briefly so players can see the
+  // final winning play on the table first, then reveal the scores.
+  if ((s.phase === 'roundEnd' || s.phase === 'matchEnd') && state && state.phase === 'playing') {
+    overlayHoldUntil = Date.now() + 2000;
+    setTimeout(render, 2050);
+  }
   prev = state;
   state = s;
   roomCode = s.code;
@@ -822,12 +829,16 @@ function renderGame() {
   renderSeat('seatTop', (state.yourSeat + 2) % n, true);
   renderSeat('seatLeft', (state.yourSeat + 3) % n, false);
 
-  // current play
+  // current play — or, briefly after a round/match ends, the final winning play
   const cp = $('currentPlay');
   cp.innerHTML = '';
-  if (state.currentPlay) {
-    $('currentPlayLabel').textContent = `${state.currentPlay.name} played ${state.currentPlay.label}`;
-    state.currentPlay.cards.forEach((code) => cp.appendChild(cardEl(code)));
+  let shown = state.currentPlay;
+  if (!shown && state.phase === 'roundEnd' && state.lastRound) shown = state.lastRound.finalPlay;
+  if (!shown && state.phase === 'matchEnd' && state.matchResult) shown = state.matchResult.finalPlay;
+  if (shown) {
+    const verb = state.phase === 'playing' ? 'played' : 'went out with';
+    $('currentPlayLabel').textContent = `${shown.name} ${verb} ${shown.label}`;
+    shown.cards.forEach((code) => cp.appendChild(cardEl(code)));
   } else {
     $('currentPlayLabel').textContent = state.phase === 'playing' ? 'Table is open — lead any combination' : '';
     cp.innerHTML = '<span class="empty-hint">no cards in play</span>';
@@ -852,6 +863,12 @@ function renderGame() {
 
 function renderOverlay() {
   const ov = $('overlay');
+  // brief hold after a round/match ends: keep the score popup hidden so the
+  // final winning play is visible on the table first.
+  if ((state.phase === 'roundEnd' || state.phase === 'matchEnd') && Date.now() < overlayHoldUntil) {
+    ov.classList.add('hidden');
+    return;
+  }
   if (state.phase === 'roundEnd' && state.lastRound) {
     ov.classList.remove('hidden');
     $('overlayTitle').textContent = `${state.lastRound.winnerName} wins the round!`;

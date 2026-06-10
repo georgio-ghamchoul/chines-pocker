@@ -32,7 +32,7 @@ function genCode() {
   return code;
 }
 function makeRoom(code, hostId) {
-  return { code, hostId, phase:'lobby', players:[], log:[], game:null, lastRound:null, matchResult:null, lastActive:Date.now(), turnSeconds:0, _nextStarter:null, _botTimer:null, _turnTimer:null };
+  return { code, hostId, phase:'lobby', players:[], log:[], game:null, lastRound:null, matchResult:null, lastActive:Date.now(), turnSeconds:0, _nextStarter:null, _botTimer:null, _turnTimer:null, _absentTimer:null };
 }
 function touch(room){ room.lastActive=Date.now(); }
 function logRoom(room,msg){ room.log.push(msg); if(room.log.length>40) room.log.shift(); }
@@ -56,14 +56,15 @@ function handToCodes(hand){ return hand.slice().sort(E.compareCards).map(E.cardC
 function takeCards(hand,codes){ const removed=[]; const working=hand.slice(); for(const code of codes){ const idx=working.findIndex(c=>E.cardCode(c)===code); if(idx===-1) return null; removed.push(working[idx]); working.splice(idx,1);} return {removed,remaining:working}; }
 
 function endRound(room,winnerSeat){
+  const g=room.game; const finalPlay=g&&g.currentPlay?{name:room.players[g.currentPlay.seat].name,cards:g.currentPlay.combo.cards.map(E.cardCode),label:g.currentPlay.combo.label}:null;
   const results=room.players.map((p,i)=>{ const cardsLeft=i===winnerSeat?0:p.hand.length; const penalty=E.penaltyFor(cardsLeft); p.score+=penalty; return {name:p.name,cardsLeft,penalty,score:p.score,seat:i}; });
-  room.lastRound={results,winnerName:room.players[winnerSeat].name};
+  room.lastRound={results,winnerName:room.players[winnerSeat].name,finalPlay};
   room._nextStarter=winnerSeat;
   logRoom(room,'win');
   const _w=room.players[winnerSeat]; if(!_w.isBot) statFor(_w.id,_w.name).roundsWon+=1;
   results.forEach(r=>{ const p=room.players[r.seat]; if(!p.isBot&&r.penalty>0) statFor(p.id,p.name).points+=r.penalty; });
   const someoneOut=room.players.some(p=>p.score>=E.MATCH_TARGET);
-  if(someoneOut){ const ranked=room.players.map((p,i)=>({name:p.name,score:p.score,seat:i})).sort((a,b)=>a.score-b.score); room.matchResult={ranked,winnerName:ranked[0].name,loserName:ranked[ranked.length-1].name}; room.phase='matchEnd'; room.game=null; logRoom(room,'match over');
+  if(someoneOut){ const ranked=room.players.map((p,i)=>({name:p.name,score:p.score,seat:i})).sort((a,b)=>a.score-b.score); room.matchResult={ranked,winnerName:ranked[0].name,loserName:ranked[ranked.length-1].name,finalPlay}; room.phase='matchEnd'; room.game=null; logRoom(room,'match over');
     const _best=ranked[0].seat,_worst=ranked[ranked.length-1].seat;
     room.players.forEach((p,i)=>{ if(p.isBot) return; const st=statFor(p.id,p.name); st.matchesPlayed+=1; if(i===_best) st.matchesWon+=1; if(i===_worst) st.matchesLost+=1; }); }
   else { room.phase='roundEnd'; room.game=null; }
@@ -133,12 +134,35 @@ function scheduleBot(room){
   if(!p||!p.isBot) return; if(room._botTimer) return;
   room._botTimer=setTimeout(()=>{
     room._botTimer=null;
-    if(room.phase!=='playing'||!room.game||room.game.turn!==seat){ scheduleBot(room); return; }
-    const codes=botMove(room,seat); let err=null;
-    if(codes&&codes.length) err=doPlay(room,seat,codes); else err=doPass(room,seat);
-    if(err){ const e2=doPass(room,seat); if(e2){ const lowest=room.players[seat].hand.slice().sort(E.compareCards)[0]; if(lowest) doPlay(room,seat,[E.cardCode(lowest)]); } }
+    try{
+      if(room.phase!=='playing'||!room.game||room.game.turn!==seat){ scheduleBot(room); return; }
+      const codes=botMove(room,seat); let err=null;
+      if(codes&&codes.length) err=doPlay(room,seat,codes); else err=doPass(room,seat);
+      if(err){ const e2=doPass(room,seat); if(e2){ const lowest=room.players[seat].hand.slice().sort(E.compareCards)[0]; if(lowest) doPlay(room,seat,[E.cardCode(lowest)]); } }
+    }catch(e){
+      // never let a bot decision crash the room — fall back to a safe legal move
+      console.error('bot move error:',e&&e.message);
+      try{ autoAct(room); }catch(_){}
+    }
     touch(room); broadcastNoBot(room); saveSoon(); scheduleBot(room);
   }, 700+Math.random()*700); // fast for tests
+}
+// If it's a disconnected human's turn, the bot/turn timers won't act. Without
+// this, the game freezes forever on that seat. Give a short grace period for
+// reconnection, then auto-play a safe move so the table keeps moving.
+function scheduleAbsent(room){
+  if(room.phase!=='playing'||!room.game){ if(room._absentTimer){clearTimeout(room._absentTimer);room._absentTimer=null;} return; }
+  const seat=room.game.turn; const p=room.players[seat];
+  if(!p||p.isBot||p.connected){ if(room._absentTimer){clearTimeout(room._absentTimer);room._absentTimer=null;} return; }
+  if(room._absentTimer) return; // already waiting on this absent player
+  room._absentTimer=setTimeout(()=>{
+    room._absentTimer=null;
+    try{
+      const g=room.game; if(!g||room.phase!=='playing'||g.turn!==seat) return;
+      const p2=room.players[seat]; if(!p2||p2.isBot||p2.connected) return; // they came back
+      autoAct(room); // plays/passes and broadcasts
+    }catch(e){ console.error('absent auto-act error:',e&&e.message); }
+  }, 12000);
 }
 
 function stateFor(room,player){
@@ -154,10 +178,10 @@ function stateFor(room,player){
     needMorePlayers:MAX_PLAYERS-room.players.length };
 }
 function clearTurnTimer(room){ if(room._turnTimer){clearTimeout(room._turnTimer);room._turnTimer=null;} if(room.game){room.game.turnDeadline=null;room.game._timerSeat=null;} }
-function armTurnTimer(room){ const g=room.game; if(!g||room.phase!=='playing'||!room.turnSeconds){clearTurnTimer(room);return;} const seat=g.turn; const p=room.players[seat]; if(!p||p.isBot||!p.connected){clearTurnTimer(room);return;} if(room._turnTimer&&g._timerSeat===seat)return; if(room._turnTimer)clearTimeout(room._turnTimer); g.turnDeadline=Date.now()+room.turnSeconds*1000; g._timerSeat=seat; room._turnTimer=setTimeout(()=>{ room._turnTimer=null; const gg=room.game; if(gg&&room.phase==='playing'&&gg.turn===seat) autoAct(room); }, room.turnSeconds*1000+200); }
+function armTurnTimer(room){ const g=room.game; if(!g||room.phase!=='playing'||!room.turnSeconds){clearTurnTimer(room);return;} const seat=g.turn; const p=room.players[seat]; if(!p||p.isBot||!p.connected){clearTurnTimer(room);return;} if(room._turnTimer&&g._timerSeat===seat)return; if(room._turnTimer)clearTimeout(room._turnTimer); g.turnDeadline=Date.now()+room.turnSeconds*1000; g._timerSeat=seat; room._turnTimer=setTimeout(()=>{ room._turnTimer=null; try{ const gg=room.game; if(gg&&room.phase==='playing'&&gg.turn===seat) autoAct(room); }catch(e){ console.error('turn timer error:',e&&e.message); } }, room.turnSeconds*1000+200); }
 function autoAct(room){ const g=room.game; if(!g||room.phase!=='playing')return; const seat=g.turn; const p=room.players[seat]; if(!p)return; const forced=g.forcedPlayer===seat&&!g.forcedHandled; const sorted=p.hand.slice().sort(E.compareCards); let err=null; if(g.currentPlay&&!forced){ err=doPass(room,seat); } else { let codes; if(forced) codes=[E.cardCode(sorted[sorted.length-1])]; else if(g.mustIncludeThreeDiamonds) codes=[E.cardCode(sorted.find(E.isThreeOfDiamonds))]; else codes=[E.cardCode(sorted[0])]; err=doPlay(room,seat,codes); if(err&&sorted[0]) doPlay(room,seat,[E.cardCode(sorted[0])]); } logRoom(room, p.name+"'s time ran out."); touch(room); broadcast(room); }
 function broadcastNoBot(room){ for(const p of room.players){ if(p.socketId) io.to(p.socketId).emit('state',stateFor(room,p)); } }
-function broadcast(room){ scheduleBot(room); armTurnTimer(room); broadcastNoBot(room); saveSoon(); }
+function broadcast(room){ scheduleBot(room); armTurnTimer(room); scheduleAbsent(room); broadcastNoBot(room); saveSoon(); }
 
 function persist(){
   try{ if(!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR,{recursive:true});
@@ -195,6 +219,11 @@ io.on('connection',(socket)=>{
   socket.on('voiceSignal',({to,data}={})=>{ if(!to) return; io.to(to).emit('voiceSignal',{from:socket.id,data}); });
   socket.on('disconnect',()=>{ const f=playerBySocket(socket.id); if(!f) return; const {room,player}=f; if(player._voice){ player._voice=false; socket.to(room.code).emit('voicePeerLeft',{id:socket.id}); } player.connected=false; player.socketId=null; if(room.phase==='lobby'){ room.players=room.players.filter(p=>p.id!==player.id); if(humanCount(room)===0){ rooms.delete(room.code); saveSoon(); return; } if(!room.players.some(p=>p.id===room.hostId&&!p.isBot)){ const fh=room.players.find(p=>!p.isBot); if(fh) room.hostId=fh.id; } } broadcast(room); });
 });
+// Last-resort safety net: a stray throw anywhere must never take the whole
+// server down (which would freeze every room for every player).
+process.on('uncaughtException',(e)=>{ console.error('uncaughtException:',e&&e.stack||e); });
+process.on('unhandledRejection',(e)=>{ console.error('unhandledRejection:',e&&e.stack||e); });
+
 loadStats();
 loadRooms();
 server.listen(PORT,()=>{ console.log(`Chinese Poker server running on http://localhost:${PORT}`); });
