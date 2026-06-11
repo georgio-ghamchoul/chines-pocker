@@ -114,6 +114,7 @@ h2 { margin: 0 0 12px; }
 .btn.big { margin-top: 6px; }
 .btn.ghost { background: transparent; border-color: transparent; color: var(--muted); }
 .btn.small { width: auto; padding: 7px 12px; font-size: .82rem; }
+#autoBtn.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 
 .divider { text-align: center; margin: 20px 0; position: relative; color: var(--muted); font-size: .82rem; }
 .divider::before { content: ""; position: absolute; top: 50%; left: 0; right: 0; height: 1px; background: var(--panel-edge); }

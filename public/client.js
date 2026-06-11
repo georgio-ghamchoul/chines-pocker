@@ -465,6 +465,7 @@ $('playBtn').onclick = () => {
 };
 $('passBtn').onclick = () => socket.emit('pass');
 $('clearSelBtn').onclick = () => { selected.clear(); render(); };
+$('autoBtn').onclick = () => socket.emit('setAuto'); // toggle autopilot (bot plays for me)
 $('logToggle').onclick = () => {
   const log = $('log');
   log.classList.toggle('hidden');
@@ -592,6 +593,7 @@ function renderSeat(elId, seat, wide) {
   el.innerHTML =
     `<div class="opp${active ? ' active-turn' : ''}${p.connected ? '' : ' disconnected'}" data-seat="${seat}">` +
     (p.isBot ? '<span class="bot-badge">BOT</span>' : '') +
+    (p.isAuto && !p.isBot ? '<span class="bot-badge">AUTO</span>' : '') +
     (state.oneCardPlayer === seat ? '<span class="one-card-flag">1 CARD</span>' : '') +
     `<div class="opp-name">${p.inVoice ? '<span class="voice-badge" title="In voice chat">🎙️</span> ' : ''}${escapeHtml(p.name)}${!p.isBot && !p.connected ? ' (off)' : ''}</div>` +
     `<div class="mini-cards">${mini}</div>` +
@@ -806,7 +808,9 @@ function renderGame() {
   const yourTurn = state.turnSeat === state.yourSeat;
 
   $('turnBanner').textContent =
-    state.phase === 'playing' ? (yourTurn ? 'Your turn' : `${seatName(state.turnSeat)}'s turn`) : '';
+    state.phase === 'playing'
+      ? (yourTurn ? (state.youAuto ? 'Your turn (autopilot)' : 'Your turn') : `${seatName(state.turnSeat)}'s turn`)
+      : '';
 
   const alert = $('oneCardAlert');
   if (state.forcedPlayer === state.yourSeat) {
@@ -853,10 +857,18 @@ function renderGame() {
   reconcileHandRows(freshDeal);
   renderHandRows(freshDeal, yourTurn);
 
-  const canAct = state.phase === 'playing' && yourTurn;
+  // autopilot: a bot is playing your turns; manual controls are disabled while on
+  const auto = !!state.youAuto;
+  const autoBtn = $('autoBtn');
+  autoBtn.classList.toggle('on', auto);
+  autoBtn.textContent = auto ? '🤖 Auto-play: ON' : '🤖 Auto-play';
+  autoBtn.title = auto ? 'Tap to take back control of your turns' : 'Let a bot play your turns';
+  autoBtn.disabled = state.phase !== 'playing';
+
+  const canAct = state.phase === 'playing' && yourTurn && !auto;
   $('playBtn').disabled = !canAct;
   $('passBtn').disabled = !canAct || !state.currentPlay;
-  $('clearSelBtn').disabled = selected.size === 0;
+  $('clearSelBtn').disabled = selected.size === 0 || auto;
 
   $('log').innerHTML = state.log.map((l) => `<div>${escapeHtml(l)}</div>`).join('');
 }

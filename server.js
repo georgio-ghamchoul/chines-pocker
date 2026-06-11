@@ -32,7 +32,7 @@ function genCode() {
   return code;
 }
 function makeRoom(code, hostId) {
-  return { code, hostId, phase:'lobby', players:[], log:[], game:null, lastRound:null, matchResult:null, lastActive:Date.now(), turnSeconds:0, _nextStarter:null, _botTimer:null, _turnTimer:null, _absentTimer:null };
+  return { code, hostId, phase:'lobby', players:[], log:[], game:null, lastRound:null, matchResult:null, lastActive:Date.now(), turnSeconds:0, _nextStarter:null, _botTimer:null, _turnTimer:null, _absentTimer:null, _hostAutoTimer:null };
 }
 function touch(room){ room.lastActive=Date.now(); }
 function logRoom(room,msg){ room.log.push(msg); if(room.log.length>40) room.log.shift(); }
@@ -128,14 +128,20 @@ function botMove(room,seat){
   const decision=BOT.decide({hand:me.hand,current:g.currentPlay?g.currentPlay.combo:null,forced:g.forcedPlayer===seat&&!g.forcedHandled,mustThreeD:g.mustIncludeThreeDiamonds,opponents,played:g.played||[]});
   return decision?decision.map(E.cardCode):null;
 }
+// A seat is auto-played by the AI if it's a bot OR a human who turned on
+// "autopilot" (the sit-out button).
+function isAutoSeat(p){ return !!p && (p.isBot || p._auto); }
 function scheduleBot(room){
   if(room.phase!=='playing'||!room.game) return;
   const seat=room.game.turn; const p=room.players[seat];
-  if(!p||!p.isBot) return; if(room._botTimer) return;
+  if(!isAutoSeat(p)) return; if(room._botTimer) return;
   room._botTimer=setTimeout(()=>{
     room._botTimer=null;
     try{
-      if(room.phase!=='playing'||!room.game||room.game.turn!==seat){ scheduleBot(room); return; }
+      if(room.phase!=='playing'||!room.game||room.game.turn!==seat){ broadcast(room); return; }
+      // the human may have taken back control during the delay — if so, don't
+      // act for them; let their own turn timer / manual play take over.
+      if(!isAutoSeat(room.players[seat])){ broadcast(room); return; }
       const codes=botMove(room,seat); let err=null;
       if(codes&&codes.length) err=doPlay(room,seat,codes); else err=doPass(room,seat);
       if(err){ const e2=doPass(room,seat); if(e2){ const lowest=room.players[seat].hand.slice().sort(E.compareCards)[0]; if(lowest) doPlay(room,seat,[E.cardCode(lowest)]); } }
@@ -144,7 +150,7 @@ function scheduleBot(room){
       console.error('bot move error:',e&&e.message);
       try{ autoAct(room); }catch(_){}
     }
-    touch(room); broadcastNoBot(room); saveSoon(); scheduleBot(room);
+    touch(room); broadcast(room);
   }, 700+Math.random()*700); // fast for tests
 }
 // If it's a disconnected human's turn, the bot/turn timers won't act. Without
@@ -153,7 +159,7 @@ function scheduleBot(room){
 function scheduleAbsent(room){
   if(room.phase!=='playing'||!room.game){ if(room._absentTimer){clearTimeout(room._absentTimer);room._absentTimer=null;} return; }
   const seat=room.game.turn; const p=room.players[seat];
-  if(!p||p.isBot||p.connected){ if(room._absentTimer){clearTimeout(room._absentTimer);room._absentTimer=null;} return; }
+  if(!p||p.isBot||p._auto||p.connected){ if(room._absentTimer){clearTimeout(room._absentTimer);room._absentTimer=null;} return; }
   if(room._absentTimer) return; // already waiting on this absent player
   room._absentTimer=setTimeout(()=>{
     room._absentTimer=null;
@@ -164,13 +170,32 @@ function scheduleAbsent(room){
     }catch(e){ console.error('absent auto-act error:',e&&e.message); }
   }, 12000);
 }
+// Hands-free round transitions: only when the HOST is named exactly "Georgio"
+// (case-sensitive) AND that host has autopilot on. Auto-deals the next round at
+// roundEnd and auto play-again at matchEnd, after a short pause to view scores.
+const AUTO_ADVANCE_HOST_NAME = 'Georgio';
+function scheduleHostAuto(room){
+  const host=room.players.find(p=>p.id===room.hostId);
+  const eligible=host && host.name===AUTO_ADVANCE_HOST_NAME && host._auto;
+  if(!eligible || (room.phase!=='roundEnd' && room.phase!=='matchEnd')){ if(room._hostAutoTimer){clearTimeout(room._hostAutoTimer);room._hostAutoTimer=null;} return; }
+  if(room._hostAutoTimer) return;
+  room._hostAutoTimer=setTimeout(()=>{
+    room._hostAutoTimer=null;
+    try{
+      const h=room.players.find(p=>p.id===room.hostId);
+      if(!h || h.name!==AUTO_ADVANCE_HOST_NAME || !h._auto) return; // host changed / turned autopilot off
+      if(room.phase==='roundEnd'){ startDeal(room); broadcast(room); }
+      else if(room.phase==='matchEnd'){ room.players.forEach(p=>p.score=0); room.matchResult=null; room.lastRound=null; room._nextStarter=null; startDeal(room); broadcast(room); }
+    }catch(e){ console.error('host auto-advance error:',e&&e.message); }
+  }, 5000);
+}
 
 function stateFor(room,player){
   const g=room.game; const seat=room.players.indexOf(player);
-  return { code:room.code, phase:room.phase, youAreHost:player.id===room.hostId, yourSeat:seat, yourHand:handToCodes(player.hand||[]),
+  return { code:room.code, phase:room.phase, youAreHost:player.id===room.hostId, yourSeat:seat, yourHand:handToCodes(player.hand||[]), youAuto:!!player._auto,
     turnSeat:g?g.turn:null, turnSeconds:room.turnSeconds||0, turnDeadline:g?(g.turnDeadline||null):null, oneCardPlayer:g?g.oneCardPlayer:null, forcedPlayer:(g&&!g.forcedHandled&&g.forcedPlayer!=null&&forcedCanPlay(room,g.forcedPlayer))?g.forcedPlayer:null, mustIncludeThreeDiamonds:g?g.mustIncludeThreeDiamonds:false,
     currentPlay:g&&g.currentPlay?{seat:g.currentPlay.seat,name:room.players[g.currentPlay.seat].name,cards:g.currentPlay.combo.cards.map(E.cardCode),label:g.currentPlay.combo.label}:null,
-    players:room.players.map((p,i)=>({seat:i,name:p.name,score:p.score,cardCount:(p.hand||[]).length,connected:p.connected,isHost:p.id===room.hostId,isBot:!!p.isBot,isYou:i===seat,inVoice:!!p._voice,lifetime:p.isBot?null:(stats[p.id]||null)})),
+    players:room.players.map((p,i)=>({seat:i,name:p.name,score:p.score,cardCount:(p.hand||[]).length,connected:p.connected,isHost:p.id===room.hostId,isBot:!!p.isBot,isAuto:!!p._auto,isYou:i===seat,inVoice:!!p._voice,lifetime:p.isBot?null:(stats[p.id]||null)})),
     log:room.log.slice(-30), lastRound:room.lastRound, matchResult:room.matchResult,
     canStart:room.phase==='lobby'&&room.players.length===MAX_PLAYERS&&humanCount(room)>=1&&player.id===room.hostId,
     canAddBot:room.phase==='lobby'&&room.players.length<MAX_PLAYERS&&player.id===room.hostId,
@@ -178,10 +203,10 @@ function stateFor(room,player){
     needMorePlayers:MAX_PLAYERS-room.players.length };
 }
 function clearTurnTimer(room){ if(room._turnTimer){clearTimeout(room._turnTimer);room._turnTimer=null;} if(room.game){room.game.turnDeadline=null;room.game._timerSeat=null;} }
-function armTurnTimer(room){ const g=room.game; if(!g||room.phase!=='playing'||!room.turnSeconds){clearTurnTimer(room);return;} const seat=g.turn; const p=room.players[seat]; if(!p||p.isBot||!p.connected){clearTurnTimer(room);return;} if(room._turnTimer&&g._timerSeat===seat)return; if(room._turnTimer)clearTimeout(room._turnTimer); g.turnDeadline=Date.now()+room.turnSeconds*1000; g._timerSeat=seat; room._turnTimer=setTimeout(()=>{ room._turnTimer=null; try{ const gg=room.game; if(gg&&room.phase==='playing'&&gg.turn===seat) autoAct(room); }catch(e){ console.error('turn timer error:',e&&e.message); } }, room.turnSeconds*1000+200); }
+function armTurnTimer(room){ const g=room.game; if(!g||room.phase!=='playing'||!room.turnSeconds){clearTurnTimer(room);return;} const seat=g.turn; const p=room.players[seat]; if(!p||p.isBot||p._auto||!p.connected){clearTurnTimer(room);return;} if(room._turnTimer&&g._timerSeat===seat)return; if(room._turnTimer)clearTimeout(room._turnTimer); g.turnDeadline=Date.now()+room.turnSeconds*1000; g._timerSeat=seat; room._turnTimer=setTimeout(()=>{ room._turnTimer=null; try{ const gg=room.game; if(gg&&room.phase==='playing'&&gg.turn===seat) autoAct(room); }catch(e){ console.error('turn timer error:',e&&e.message); } }, room.turnSeconds*1000+200); }
 function autoAct(room){ const g=room.game; if(!g||room.phase!=='playing')return; const seat=g.turn; const p=room.players[seat]; if(!p)return; const forced=g.forcedPlayer===seat&&!g.forcedHandled; const sorted=p.hand.slice().sort(E.compareCards); let err=null; if(g.currentPlay&&!forced){ err=doPass(room,seat); } else { let codes; if(forced) codes=[E.cardCode(sorted[sorted.length-1])]; else if(g.mustIncludeThreeDiamonds) codes=[E.cardCode(sorted.find(E.isThreeOfDiamonds))]; else codes=[E.cardCode(sorted[0])]; err=doPlay(room,seat,codes); if(err&&sorted[0]) doPlay(room,seat,[E.cardCode(sorted[0])]); } logRoom(room, p.name+"'s time ran out."); touch(room); broadcast(room); }
 function broadcastNoBot(room){ for(const p of room.players){ if(p.socketId) io.to(p.socketId).emit('state',stateFor(room,p)); } }
-function broadcast(room){ scheduleBot(room); armTurnTimer(room); scheduleAbsent(room); broadcastNoBot(room); saveSoon(); }
+function broadcast(room){ scheduleBot(room); armTurnTimer(room); scheduleAbsent(room); scheduleHostAuto(room); broadcastNoBot(room); saveSoon(); }
 
 function persist(){
   try{ if(!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR,{recursive:true});
@@ -211,6 +236,8 @@ io.on('connection',(socket)=>{
   socket.on('playAgain',()=>{ const f=playerBySocket(socket.id); if(!f) return; const {room,player}=f; if(player.id!==room.hostId||room.phase!=='matchEnd') return; room.players.forEach(p=>p.score=0); room.matchResult=null; room.lastRound=null; room._nextStarter=null; startDeal(room); broadcast(room); });
   socket.on('play',({cards})=>{ const f=playerBySocket(socket.id); if(!f) return; const {room,player}=f; const seat=room.players.indexOf(player); const err=doPlay(room,seat,cards); if(err) socket.emit('error',{message:err}); touch(room); broadcast(room); });
   socket.on('pass',()=>{ const f=playerBySocket(socket.id); if(!f) return; const {room,player}=f; const seat=room.players.indexOf(player); const err=doPass(room,seat); if(err) socket.emit('error',{message:err}); touch(room); broadcast(room); });
+  // Autopilot toggle: a bot plays this human's turns until they toggle it off.
+  socket.on('setAuto',({on}={})=>{ const f=playerBySocket(socket.id); if(!f) return; const {room,player}=f; player._auto=(on===undefined)?!player._auto:!!on; if(!player._auto&&room._botTimer){ clearTimeout(room._botTimer); room._botTimer=null; } touch(room); broadcast(room); });
   socket.on('reaction',({emoji}={})=>{ const f=playerBySocket(socket.id); if(!f) return; const {room,player}=f; const t=String(emoji||'').slice(0,12); if(!ALLOWED_REACTIONS.has(t)) return; const now=Date.now(); if(player._lastReact&&now-player._lastReact<400) return; player._lastReact=now; const seat=room.players.indexOf(player); io.to(room.code).emit('reaction',{seat,name:player.name,emoji:t}); });
   socket.on('chat',({text}={})=>{ const f=playerBySocket(socket.id); if(!f) return; const {room,player}=f; const msg=String(text||'').replace(/[\x00-\x1F\x7F]/g,' ').trim().slice(0,140); if(!msg) return; const now=Date.now(); if(player._lastChat&&now-player._lastChat<300) return; player._lastChat=now; const seat=room.players.indexOf(player); socket.to(room.code).emit('chat',{seat,name:player.name,text:msg}); });
   socket.on('getStats',({playerId}={},cb)=>{ cb&&cb({ok:true,stats:stats[playerId]||null}); });
